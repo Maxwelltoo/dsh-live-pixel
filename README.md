@@ -2,38 +2,20 @@
 
 [简体中文](README.zh.md)
 
-Four animated pixel landscapes for DeepSeek Harness Web, drawn in real time with WebGL.
+A DeepSeek Harness plugin that renders four animated pixel landscapes in real time with WebGL.
 
 ![WebGL preview of Borealis, The Well, Neon, and The Deep](docs/live-pixel.gif)
 
 ## Install and use
 
-1. Install the first npm preview from the `next` tag. If your DSH Web server uses a different profile, replace `web` with its name. If you already use the local bundle, [remove it first](#migrate-from-the-local-build).
+1. Open **Plugins → Add plugin**, enter `dsh-live-pixel@next`, and confirm the installation. Select **Enable now** and follow any restart prompt.
+2. Open **Settings → Pixel themes** and choose a scene. If the scene makes text hard to read, lower **Scene strength** or raise **Surface paper**.
 
-   ```sh
-   dsh plugin --profile web add dsh-live-pixel@next
-   ```
-
-2. Restart the DSH Web server for that profile and refresh the page.
-3. Open **Settings → Pixel themes** and choose a scene in the **Theme** dropdown. If text is hard to read over the scene, lower **Scene strength** or raise **Surface paper**.
-
-### Remove
-
-```sh
-dsh plugin --profile web remove dsh-live-pixel
-```
-
-Restart the same DSH Web server and refresh the page after removal.
+To install from a GitHub release tarball, enter its absolute path on the DSH host in **Add plugin**. To uninstall, open the bundle in **Plugins** and select **Uninstall**.
 
 ### Migrate from the local build
 
-If you installed `@local/dsh-pixel-themes` as a bundle, remove it from the same profile before installing the preview. If you added it through a manual profile patch, remove that patch entry instead.
-
-```sh
-dsh plugin --profile web remove @local/dsh-pixel-themes
-```
-
-The new package reuses your theme and readability settings in the same browser and origin. To install a release tarball, pass its absolute path on the DSH host to `dsh plugin --profile web add` in place of `dsh-live-pixel@next`.
+Remove `@local/dsh-pixel-themes` from the same profile before installing the preview. If you added it through a manual profile patch, delete its entry from that patch. The new package reuses preferences stored in the current client.
 
 ## Scenes
 
@@ -54,14 +36,29 @@ The new package reuses your theme and readability settings in the same browser a
 | Side columns | 90% | Paper opacity of the session list and the right panel |
 | Bottom scrim | 60% | Strength of the fade above the composer |
 
-Each theme keeps its own slider values. **Restore defaults** resets the current theme. DSH Web only syncs allowlisted settings namespaces, so this plugin stores its preferences in the current browser's `localStorage`.
+Each theme keeps its own slider values. **Restore defaults** resets the current theme. Preferences are stored locally in the current Desktop installation or Web browser profile.
 
 ## How it works
 
-- **Shared WebGL engine.** A single fixed canvas (`z-index: -1`) draws one dither cell per 3 CSS pixels and targets 24 FPS. The engine manages sizing, frame scheduling, pointer easing and context loss recovery. It pauses animation while the tab is hidden and holds a still frame when reduced motion is enabled. Without WebGL, the UI keeps the theme palette without the animated scene.
+- **Shared WebGL engine.** A single fixed canvas (`z-index: -1`) draws one dither cell per 3 CSS pixels and targets 24 FPS. The engine manages sizing, frame scheduling, pointer easing and context loss recovery. It pauses animation while the tab is hidden and holds a still frame when reduced motion is enabled. The animated scenes require WebGL.
 - **Theme data.** Each theme supplies a GLSL fragment shader, light and dark shader palettes, semantic UI colours, localized labels and control defaults. The shaders choose their Bayer matrix. Neon uses 4×4 and the other scenes use 8×8.
 - **UI tokens.** The semantic palette and paper opacity values feed 40+ `--dsw-alias-*` and `--dsw-specific-*` tokens for the app, including dialogs, menus and code blocks.
 - **Readable layers.** The stylesheet clears the main containers, including `body`, `#root` and the conversation column, so the canvas shows through. Keeping `--dsw-alias-bg-base` opaque preserves neutral card fills, and the side columns keep their own paper fills. The paper veil (`--dsh-pixel-veil`) and bottom scrim (`--dsh-pixel-scrim`) sit above the canvas.
+
+## Compatibility
+
+Desktop and Web use the same client plugin. Installing and removing `dsh-live-pixel@next` was verified with an isolated DSH `0.2.2-rc.1` Web profile. Desktop installation and rendering on physical hardware are pending verification.
+
+The graphical installation steps above apply to both. To install from a terminal, use the command for your profile.
+
+```sh
+# Web profile
+dsh plugin --profile web add dsh-live-pixel@next
+# Desktop profile, using the dsh command bundled with Desktop
+dsh plugin --profile desktop add dsh-live-pixel@next
+```
+
+Replace `web` if your Web server uses a different profile, then restart the server and refresh the browser. For Desktop, launch the app once to initialize its profile, fully quit before running the bundled command, and reopen it afterward. [Desktop command runtime](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/apps/desktop/README.md#bundled-command-runtime)
 
 ## Contributing and development
 

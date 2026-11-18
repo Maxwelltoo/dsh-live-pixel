@@ -2,38 +2,20 @@
 
 [English](README.md)
 
-在 DeepSeek Harness Web 窗口背后，用 WebGL 实时绘制四种动态像素风景。
+一个 DeepSeek Harness 插件，通过 WebGL 实时绘制四种动态像素风景。
 
 ![极光、深井、霓虹和深海的 WebGL 实际渲染预览](docs/live-pixel.gif)
 
 ## 安装与使用
 
-1. 首次 npm 预览通过 `next` 标签安装。如果 Web 服务使用其他 profile，请将 `web` 改成实际名称。已安装旧本地包时，请[先移除旧版](#从本地版本迁移)。
+1. 打开 **插件 → 添加插件**，输入 `dsh-live-pixel@next` 并确认安装。选择「立即启用」，按界面提示重启。
+2. 打开 **设置 → 像素主题**，选择想用的场景。如果背景让文字难以辨认，可以降低「风景强度」或提高「卡片纸色」。
 
-   ```sh
-   dsh plugin --profile web add dsh-live-pixel@next
-   ```
-
-2. 重启该 profile 的 DSH Web 服务，再刷新浏览器页面。
-3. 打开 **设置 → 像素主题**，在「主题」下拉框切换场景。如果背景让文字难以辨认，可以降低「风景强度」或提高「卡片纸色」。
-
-### 卸载
-
-```sh
-dsh plugin --profile web remove dsh-live-pixel
-```
-
-卸载后重启同一个 DSH Web 服务，再刷新页面。
+从 GitHub Release 下载 tarball 后，也可在「添加插件」中输入该文件在 DSH 宿主机上的绝对路径。需要卸载时，在「插件」页打开此插件并选择「卸载」。
 
 ### 从本地版本迁移
 
-如果之前以插件包方式安装了 `@local/dsh-pixel-themes`，请在安装预览版前从同一个 profile 卸载旧包。如果是通过手工配置加载的，请移除对应的补丁条目。
-
-```sh
-dsh plugin --profile web remove @local/dsh-pixel-themes
-```
-
-在同一个浏览器、同一个站点来源下，新包会沿用原有主题和可读性设置。若要安装发布压缩包，可用它在 DSH 宿主机上的绝对路径替换安装命令中的 `dsh-live-pixel@next`。
+安装前，在同一个 profile 卸载 `@local/dsh-pixel-themes`。如果旧版通过手工补丁加载，则移除对应条目。新包会沿用当前客户端已保存的偏好。
 
 ## 四种主题
 
@@ -54,14 +36,29 @@ dsh plugin --profile web remove @local/dsh-pixel-themes
 | 侧栏纸色 | 90% | 会话列表和右侧面板的纸色不透明度 |
 | 底部柔光 | 60% | 输入框上方渐隐层的强度 |
 
-每个主题独立保存滑块数值。「恢复默认」重置当前主题。DSH Web 的设置同步只接受白名单内的命名空间，因此插件把偏好存于当前浏览器的 `localStorage`。
+每个主题独立保存滑块数值。「恢复默认」重置当前主题。偏好存于当前 Desktop 安装环境或 Web 浏览器配置中。
 
 ## 实现原理
 
-- **共享 WebGL 引擎。** 一块固定画布（`z-index: -1`），每 3 CSS 像素绘制一个抖动格，目标帧率为 24 FPS。引擎负责尺寸、帧调度、指针缓动和 WebGL 上下文恢复。标签页隐藏时暂停动画，开启系统「减少动态效果」时显示静帧。没有 WebGL 时，界面保留主题配色，省略动态风景。
+- **共享 WebGL 引擎。** 一块固定画布（`z-index: -1`），每 3 CSS 像素绘制一个抖动格，目标帧率为 24 FPS。引擎负责尺寸、帧调度、指针缓动和 WebGL 上下文恢复。标签页隐藏时暂停动画，开启系统「减少动态效果」时显示静帧。动态风景依赖 WebGL。
 - **主题数据。** 每个主题提供 GLSL 片段着色器、明暗着色器调色板、界面语义色、中英文名称与控件默认值。Bayer 矩阵由着色器选用。霓虹使用 4×4，其余场景均为 8×8。
 - **界面 Token。** 语义配色与纸色不透明度共同生成 40 多个 `--dsw-alias-*` 和 `--dsw-specific-*` Token，让对话框、菜单和代码块等元素跟随主题。
 - **可读层。** 样式表将 `body`、`#root`、会话列等主要容器的背景设为透明，让画布透出。`--dsw-alias-bg-base` 保持不透明以保留卡片底色，侧栏也保留自己的纸色。画布上方的覆色（`--dsh-pixel-veil`）和底部渐隐（`--dsh-pixel-scrim`）由设置页控制。
+
+## 兼容性
+
+Desktop 和 Web 使用同一个客户端插件。已在 DSH `0.2.2-rc.1` 的隔离 Web profile 中验证 `dsh-live-pixel@next` 的安装和卸载。Desktop 的实机安装与渲染待验证。
+
+前面的图形界面安装步骤在两端通用。若使用命令行，请选择对应的 profile。
+
+```sh
+# Web profile
+dsh plugin --profile web add dsh-live-pixel@next
+# Desktop profile，使用 Desktop 自带的 dsh 命令
+dsh plugin --profile desktop add dsh-live-pixel@next
+```
+
+Web 使用其他 profile 时请替换 `web`，安装后重启服务并刷新浏览器。Desktop 需先启动一次以初始化 profile，完全退出后再执行内置命令，安装后重新打开应用。[Desktop 内置命令运行时](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/apps/desktop/README.zh.md#bundled-command-runtime)
 
 ## 贡献与开发
 
