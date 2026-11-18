@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <rect width="64" height="64" rx="14" fill="#08080d"/>
+  <!-- dithered aurora: a five-step palette sampled as cells -->
+  <g fill="#6ff0c4">
+    <rect x="10" y="26" width="4" height="4" opacity="0.35"/>
+    <rect x="18" y="26" width="4" height="4" opacity="0.55"/>
+    <rect x="30" y="22" width="4" height="4" opacity="0.45"/>
+    <rect x="34" y="26" width="4" height="4" opacity="0.8"/>
+    <rect x="42" y="22" width="4" height="4" opacity="0.4"/>
+    <rect x="46" y="26" width="4" height="4" opacity="0.6"/>
+    <rect x="14" y="30" width="4" height="4" opacity="0.7"/>
+    <rect x="22" y="30" width="4" height="4" opacity="0.9"/>
+    <rect x="38" y="30" width="4" height="4" opacity="0.75"/>
+    <rect x="50" y="30" width="4" height="4" opacity="0.5"/>
+  </g>
+  <g fill="#9a7bff">
+    <rect x="26" y="26" width="4" height="4" opacity="0.7"/>
+    <rect x="18" y="22" width="4" height="4" opacity="0.5"/>
+    <rect x="38" y="18" width="4" height="4" opacity="0.4"/>
+    <rect x="42" y="18" width="4" height="4" opacity="0.6"/>
+    <rect x="30" y="18" width="4" height="4" opacity="0.35"/>
+  </g>
+  <g fill="#e8509a">
+    <rect x="26" y="18" width="4" height="4" opacity="0.6"/>
+    <rect x="34" y="22" width="4" height="4" opacity="0.5"/>
+    <rect x="46" y="18" width="4" height="4" opacity="0.45"/>
+  </g>
+  <!-- ridges -->
+  <path d="M4 46 L16 36 L28 44 L40 34 L52 44 L60 40 L60 52 L4 52 Z" fill="#1b1a26"/>
+  <path d="M4 50 L14 42 L26 48 L38 40 L50 48 L60 46 L60 54 L4 54 Z" fill="#0f0e16"/>
+  <!-- lake -->
+  <g fill="#6ff0c4">
+    <rect x="12" y="56" width="4" height="2" opacity="0.35"/>
+    <rect x="20" y="56" width="4" height="2" opacity="0.2"/>
+    <rect x="34" y="56" width="4" height="2" opacity="0.3"/>
+    <rect x="46" y="56" width="4" height="2" opacity="0.25"/>
+    <rect x="16" y="52" width="4" height="2" opacity="0.15"/>
+    <rect x="40" y="52" width="4" height="2" opacity="0.18"/>
+  </g>
+</svg>
