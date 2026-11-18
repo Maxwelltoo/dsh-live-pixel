@@ -16,6 +16,20 @@ const STATE_COLORS = {
   dark: { error: [255, 107, 122], success: [79, 213, 127], warn: [254, 162, 71] }
 };
 
+const luminance = rgb => {
+  const [r, g, b] = unitRgb(rgb).map(channel => channel <= 0.04045
+    ? channel / 12.92
+    : ((channel + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+
+// Use the foreground with the better minimum contrast across normal and hover.
+const buttonForeground = ({ accent, accentHover }) => {
+  const normal = luminance(accent) + 0.05;
+  const hover = luminance(accentHover) + 0.05;
+  return Math.min(normal, hover) / 0.05 >= 1.05 / Math.max(normal, hover) ? '#000' : '#fff';
+};
+
 /**
  * Compose the alias map for one theme and one set of knob values.
  * @param theme - active theme spec.
@@ -60,6 +74,7 @@ const buildTokens = (theme, values) => {
     set('--dsw-alias-brand-primary', rgbCss(palette.accent));
     set('--dsw-alias-brand-primary-soft', rgbaCss(palette.accent, 0.15));
     set('--dsw-alias-brand-text', rgbCss(palette.accent));
+    set('--dsw-alias-label-primary-foreground', buttonForeground(palette));
     set('--dsw-alias-button-primary-fill', rgbCss(palette.accent));
     set('--dsw-alias-button-primary-hover', rgbCss(palette.accentHover));
     set('--dsw-alias-button-primary-dimmed', rgbaCss(palette.accent, 0.45));

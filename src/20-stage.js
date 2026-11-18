@@ -1,13 +1,7 @@
 /**
- * The stage: one fixed <canvas> behind the window, drawing whichever theme is
- * active through its own fragment shader.
- *
- * The engine owns the parts every theme shares — the vertex quad, the dither
- * cell grid, the frame budget, the pointer easing, the visibility and
- * reduced-motion handling, WebGL loss recovery — and hands the shader the four
- * uniforms it drives: `uRes`, `uTime`, `uPointer`, `uNight`.
+ * One opaque paper layer behind the app. WebGL draws into a canvas above it,
+ * which is revealed only after drawing a frame and hidden on GPU failure.
  */
-
 const STAGE_VERTEX_SHADER = `
 attribute vec2 aPos;
 void main() {
@@ -15,145 +9,173 @@ void main() {
 }
 `;
 
-/**
- * Mount the canvas and start drawing.
- * @param theme - active theme spec (its `fragment` and `colors` are used).
- * @param isDark - reads the current color scheme.
- * @returns refresh/destroy handles.
- */
 function createStage({ theme, isDark }) {
-  const colorNames = Object.keys(theme.colors.dark);
+  const backdrop = document.createElement('div');
+  backdrop.setAttribute('aria-hidden', 'true');
+  backdrop.dataset.dshPixelScene = theme.id;
+  backdrop.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden';
+  const paletteOf = dark => theme.colors[dark ? 'dark' : 'light'];
+  let gl = null;
+  let paper = '';
+  const updatePaper = () => {
+    const dark = isDark();
+    backdrop.style.backgroundColor = rgbCss(theme.palette[dark ? 'dark' : 'light'].paper);
+    paper = rgbCss(paletteOf(dark).uPaper);
+  };
+  updatePaper();
+
   const canvas = document.createElement('canvas');
   canvas.setAttribute('aria-hidden', 'true');
-  canvas.dataset.dshPixelScene = theme.id;
-  // The CSS background is the paper: if WebGL is unavailable or the context is
-  // lost, the window still shows the theme's ground colour.
-  canvas.style.cssText = [
-    'position: fixed',
-    'left: 0',
-    'top: 0',
-    'z-index: -1',
-    'pointer-events: none',
-    'image-rendering: pixelated',
-    'image-rendering: crisp-edges'
-  ].join(';');
+  canvas.style.cssText = 'display:block;image-rendering:pixelated;image-rendering:crisp-edges';
+  canvas.style.visibility = 'hidden';
+  canvas.style.backgroundColor = paper;
 
-  const gl = canvas.getContext('webgl', {
-    alpha: false,
-    antialias: false,
-    depth: false,
-    stencil: false,
-    powerPreference: 'low-power',
-    preserveDrawingBuffer: false
-  });
-
-  const paletteOf = dark => theme.colors[dark ? 'dark' : 'light'];
-  let paper = rgbCss(paletteOf(isDark()).uPaper);
-  canvas.style.background = paper;
-
-  const mount = () => {
-    if (canvas.isConnected) return true;
-    if (!document.body) return false;
-    document.body.prepend(canvas);
-    return true;
-  };
-
-  if (!gl) {
-    console.warn(`[${BUNDLE_ID}] WebGL unavailable: keeping the flat palette without the scene.`);
-    return { refresh() {}, destroy() {} };
+  try {
+    gl = canvas.getContext('webgl', {
+      alpha: false,
+      antialias: false,
+      depth: false,
+      stencil: false,
+      powerPreference: 'low-power',
+      preserveDrawingBuffer: false
+    });
+  } catch (error) {
+    console.warn(`[${BUNDLE_ID}] WebGL context could not be created:`, error);
   }
 
-  mount();
+  if (!gl) {
+    document.body.prepend(backdrop);
+    return {
+      refresh: updatePaper,
+      destroy() {
+        backdrop.remove();
+      }
+    };
+  }
 
-  let program = null;
-  let locations = {};
-  let raf = 0;
-  let last = 0;
+  const colorNames = Object.keys(theme.colors.dark);
+  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const start = performance.now();
+  let vertex = null;
+  let fragment = null;
+  let program = null;
+  let buffer = null;
+  let locations = {};
+  let ready = false;
   let lost = false;
+  let destroyed = false;
+  let raf = null;
+  let last = 0;
   let pointer = 0;
   let pointerTarget = 0;
-  const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-  const compile = (type, source) => {
-    const shader = gl.createShader(type);
+  const stop = () => {
+    if (raf !== null) cancelAnimationFrame(raf);
+    raf = null;
+  };
+
+  const releaseResources = () => {
+    const resources = { program, buffer, fragment, vertex };
+    vertex = fragment = program = buffer = null;
+    locations = {};
+    if (lost) return;
+    const release = (label, action) => {
+      try {
+        action();
+      } catch (error) {
+        console.warn(`[${BUNDLE_ID}] could not release ${label}:`, error);
+      }
+    };
+    if (resources.program) release('program binding', () => gl.useProgram(null));
+    if (resources.buffer) release('vertex buffer', () => gl.deleteBuffer(resources.buffer));
+    if (resources.program) release('program', () => gl.deleteProgram(resources.program));
+    if (resources.fragment) release('fragment shader', () => gl.deleteShader(resources.fragment));
+    if (resources.vertex) release('vertex shader', () => gl.deleteShader(resources.vertex));
+  };
+
+  const showPaper = () => {
+    ready = false;
+    stop();
+    canvas.style.visibility = 'hidden';
+    releaseResources();
+  };
+
+  const compile = (shader, source) => {
+    if (!shader) throw new Error('could not allocate shader');
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      console.warn(`[${BUNDLE_ID}] theme "${theme.id}" shader compile failed:`, gl.getShaderInfoLog(shader));
-      return null;
+      throw new Error(`shader compile failed: ${gl.getShaderInfoLog(shader)}`);
     }
-    return shader;
   };
 
   const build = () => {
-    const vertex = compile(gl.VERTEX_SHADER, STAGE_VERTEX_SHADER);
-    const fragment = compile(gl.FRAGMENT_SHADER, theme.fragment);
-    if (!vertex || !fragment) {
-      program = null;
-      return;
-    }
-
+    vertex = gl.createShader(gl.VERTEX_SHADER);
+    compile(vertex, STAGE_VERTEX_SHADER);
+    fragment = gl.createShader(gl.FRAGMENT_SHADER);
+    compile(fragment, theme.fragment);
     program = gl.createProgram();
+    if (!program) throw new Error('could not allocate program');
     gl.attachShader(program, vertex);
     gl.attachShader(program, fragment);
     gl.bindAttribLocation(program, 0, 'aPos');
     gl.linkProgram(program);
-
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.warn(`[${BUNDLE_ID}] theme "${theme.id}" program link failed:`, gl.getProgramInfoLog(program));
-      program = null;
-      return;
+      throw new Error(`program link failed: ${gl.getProgramInfoLog(program)}`);
     }
 
     gl.useProgram(program);
-    // One triangle that covers the viewport.
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    buffer = gl.createBuffer();
+    if (!buffer) throw new Error('could not allocate vertex buffer');
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-    locations = {};
     for (const name of ['uRes', 'uTime', 'uPointer', 'uNight', ...colorNames]) {
       locations[name] = gl.getUniformLocation(program, name);
     }
   };
 
+  const canDraw = () => ready && !lost && !destroyed;
+  const render = action => {
+    try {
+      action();
+    } catch (error) {
+      showPaper();
+      console.warn(`[${BUNDLE_ID}] WebGL failed for theme "${theme.id}":`, error);
+    }
+  };
+
   const draw = now => {
-    if (!program || lost) return;
+    if (!canDraw()) return;
+    render(() => {
+      const dark = isDark();
+      const colors = paletteOf(dark);
+      const nextPaper = rgbCss(colors.uPaper);
+      if (nextPaper !== paper) {
+        paper = nextPaper;
+        canvas.style.backgroundColor = paper;
+      }
+      const time = motion.matches ? ENGINE.stillFrame : (now - start) / 1000;
+      pointer += (pointerTarget - pointer) * 0.08;
 
-    const dark = isDark();
-    const colors = paletteOf(dark);
-    const nextPaper = rgbCss(colors.uPaper);
-    if (nextPaper !== paper) {
-      paper = nextPaper;
-      canvas.style.background = paper;
-    }
-
-    // reduced motion holds one still frame, picked so no shooting star is in flight
-    const time = motion.matches ? ENGINE.stillFrame : ((now - start) / 1000);
-    pointer += (pointerTarget - pointer) * 0.08;
-
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    // A theme's shader may ignore some of these (a night-only scene need not
-    // declare `uNight`, a self-paletted one need not declare `uPaper`); an
-    // undeclared uniform yields a null location, which must simply be skipped.
-    if (locations.uRes !== null) gl.uniform2f(locations.uRes, canvas.width, canvas.height);
-    if (locations.uTime !== null) gl.uniform1f(locations.uTime, time);
-    if (locations.uPointer !== null) gl.uniform1f(locations.uPointer, pointer);
-    if (locations.uNight !== null) gl.uniform1f(locations.uNight, dark ? 1 : 0);
-
-    for (const name of colorNames) {
-      if (locations[name] === null) continue;
-      gl.uniform3fv(locations[name], unitRgb(colors[name]));
-    }
-
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      // A fragment shader can omit uniforms it does not use.
+      if (locations.uRes !== null) gl.uniform2f(locations.uRes, canvas.width, canvas.height);
+      if (locations.uTime !== null) gl.uniform1f(locations.uTime, time);
+      if (locations.uPointer !== null) gl.uniform1f(locations.uPointer, pointer);
+      if (locations.uNight !== null) gl.uniform1f(locations.uNight, dark ? 1 : 0);
+      for (const name of colorNames) {
+        if (locations[name] !== null) gl.uniform3fv(locations[name], unitRgb(colors[name]));
+      }
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (canvas.style.visibility === 'hidden') canvas.style.visibility = 'visible';
+    });
   };
 
   const resize = () => {
-    if (!canvas.isConnected) mount();
-    // Whole device pixels per cell, so every cell is the same size.
+    if (!canDraw()) return;
+    // Snap the grid to whole device pixels so every cell is the same size.
     const dpr = window.devicePixelRatio || 1;
     const snapped = Math.max(1, Math.round(ENGINE.cell * dpr)) / dpr;
     const columns = Math.max(1, Math.ceil(window.innerWidth / snapped));
@@ -165,22 +187,21 @@ function createStage({ theme, isDark }) {
     draw(performance.now());
   };
 
+  const shouldAnimate = () => canDraw() && !motion.matches && !document.hidden;
   const tick = now => {
-    raf = requestAnimationFrame(tick);
+    raf = null;
+    if (!shouldAnimate()) return;
     if (now - last >= 1000 / ENGINE.fps - 2) {
       last = now;
       draw(now);
     }
+    if (shouldAnimate()) raf = requestAnimationFrame(tick);
   };
 
   const play = () => {
-    cancelAnimationFrame(raf);
-    raf = 0;
-    if (!motion.matches && !document.hidden) {
-      raf = requestAnimationFrame(tick);
-    } else {
-      draw(performance.now());
-    }
+    stop();
+    if (shouldAnimate()) raf = requestAnimationFrame(tick);
+    else if (!document.hidden && motion.matches) draw(performance.now());
   };
 
   const onPointer = event => {
@@ -190,41 +211,54 @@ function createStage({ theme, isDark }) {
   const onLost = event => {
     event.preventDefault();
     lost = true;
-    cancelAnimationFrame(raf);
+    showPaper();
   };
 
   const onRestored = () => {
+    if (destroyed) return;
     lost = false;
-    build();
-    resize();
-    play();
+    render(() => {
+      build();
+      ready = true;
+      resize();
+      play();
+    });
   };
 
-  canvas.addEventListener('webglcontextlost', onLost);
-  canvas.addEventListener('webglcontextrestored', onRestored);
-  window.addEventListener('resize', resize);
-  window.addEventListener('pointermove', onPointer, { passive: true });
-  document.addEventListener('visibilitychange', play);
-  if (typeof motion.addEventListener === 'function') motion.addEventListener('change', play);
+  const destroy = () => {
+    if (destroyed) return;
+    destroyed = true;
+    backdrop.remove();
+    window.removeEventListener('resize', resize);
+    window.removeEventListener('pointermove', onPointer);
+    document.removeEventListener('visibilitychange', play);
+    motion.removeEventListener?.('change', play);
+    canvas.removeEventListener('webglcontextlost', onLost);
+    canvas.removeEventListener('webglcontextrestored', onRestored);
+    showPaper();
+    if (!lost) gl.getExtension('WEBGL_lose_context')?.loseContext();
+  };
 
-  build();
-  resize();
-  play();
+  try {
+    backdrop.append(canvas);
+    canvas.addEventListener('webglcontextlost', onLost);
+    canvas.addEventListener('webglcontextrestored', onRestored);
+    window.addEventListener('resize', resize);
+    window.addEventListener('pointermove', onPointer, { passive: true });
+    document.addEventListener('visibilitychange', play);
+    motion.addEventListener?.('change', play);
+    document.body.prepend(backdrop);
+    onRestored();
+  } catch (error) {
+    destroy();
+    throw error;
+  }
 
   return {
     refresh() {
+      updatePaper();
       draw(performance.now());
     },
-    destroy() {
-      cancelAnimationFrame(raf);
-      window.removeEventListener('resize', resize);
-      window.removeEventListener('pointermove', onPointer);
-      document.removeEventListener('visibilitychange', play);
-      if (typeof motion.removeEventListener === 'function') motion.removeEventListener('change', play);
-      canvas.removeEventListener('webglcontextlost', onLost);
-      canvas.removeEventListener('webglcontextrestored', onRestored);
-      gl.getExtension('WEBGL_lose_context')?.loseContext();
-      canvas.remove();
-    }
+    destroy
   };
 }

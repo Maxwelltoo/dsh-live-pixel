@@ -767,15 +767,9 @@ window.__ModuleLoader__.load({
   };
 
   /**
-   * The stage: one fixed <canvas> behind the window, drawing whichever theme is
-   * active through its own fragment shader.
-   *
-   * The engine owns the parts every theme shares — the vertex quad, the dither
-   * cell grid, the frame budget, the pointer easing, the visibility and
-   * reduced-motion handling, WebGL loss recovery — and hands the shader the four
-   * uniforms it drives: `uRes`, `uTime`, `uPointer`, `uNight`.
+   * One opaque paper layer behind the app. WebGL draws into a canvas above it,
+   * which is revealed only after drawing a frame and hidden on GPU failure.
    */
-
   const STAGE_VERTEX_SHADER = `
   attribute vec2 aPos;
   void main() {
@@ -783,145 +777,173 @@ window.__ModuleLoader__.load({
   }
   `;
 
-  /**
-   * Mount the canvas and start drawing.
-   * @param theme - active theme spec (its `fragment` and `colors` are used).
-   * @param isDark - reads the current color scheme.
-   * @returns refresh/destroy handles.
-   */
   function createStage({ theme, isDark }) {
-    const colorNames = Object.keys(theme.colors.dark);
+    const backdrop = document.createElement('div');
+    backdrop.setAttribute('aria-hidden', 'true');
+    backdrop.dataset.dshPixelScene = theme.id;
+    backdrop.style.cssText = 'position:fixed;inset:0;z-index:-1;pointer-events:none;overflow:hidden';
+    const paletteOf = dark => theme.colors[dark ? 'dark' : 'light'];
+    let gl = null;
+    let paper = '';
+    const updatePaper = () => {
+      const dark = isDark();
+      backdrop.style.backgroundColor = rgbCss(theme.palette[dark ? 'dark' : 'light'].paper);
+      paper = rgbCss(paletteOf(dark).uPaper);
+    };
+    updatePaper();
+
     const canvas = document.createElement('canvas');
     canvas.setAttribute('aria-hidden', 'true');
-    canvas.dataset.dshPixelScene = theme.id;
-    // The CSS background is the paper: if WebGL is unavailable or the context is
-    // lost, the window still shows the theme's ground colour.
-    canvas.style.cssText = [
-      'position: fixed',
-      'left: 0',
-      'top: 0',
-      'z-index: -1',
-      'pointer-events: none',
-      'image-rendering: pixelated',
-      'image-rendering: crisp-edges'
-    ].join(';');
+    canvas.style.cssText = 'display:block;image-rendering:pixelated;image-rendering:crisp-edges';
+    canvas.style.visibility = 'hidden';
+    canvas.style.backgroundColor = paper;
 
-    const gl = canvas.getContext('webgl', {
-      alpha: false,
-      antialias: false,
-      depth: false,
-      stencil: false,
-      powerPreference: 'low-power',
-      preserveDrawingBuffer: false
-    });
-
-    const paletteOf = dark => theme.colors[dark ? 'dark' : 'light'];
-    let paper = rgbCss(paletteOf(isDark()).uPaper);
-    canvas.style.background = paper;
-
-    const mount = () => {
-      if (canvas.isConnected) return true;
-      if (!document.body) return false;
-      document.body.prepend(canvas);
-      return true;
-    };
-
-    if (!gl) {
-      console.warn(`[${BUNDLE_ID}] WebGL unavailable: keeping the flat palette without the scene.`);
-      return { refresh() {}, destroy() {} };
+    try {
+      gl = canvas.getContext('webgl', {
+        alpha: false,
+        antialias: false,
+        depth: false,
+        stencil: false,
+        powerPreference: 'low-power',
+        preserveDrawingBuffer: false
+      });
+    } catch (error) {
+      console.warn(`[${BUNDLE_ID}] WebGL context could not be created:`, error);
     }
 
-    mount();
+    if (!gl) {
+      document.body.prepend(backdrop);
+      return {
+        refresh: updatePaper,
+        destroy() {
+          backdrop.remove();
+        }
+      };
+    }
 
-    let program = null;
-    let locations = {};
-    let raf = 0;
-    let last = 0;
+    const colorNames = Object.keys(theme.colors.dark);
+    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
     const start = performance.now();
+    let vertex = null;
+    let fragment = null;
+    let program = null;
+    let buffer = null;
+    let locations = {};
+    let ready = false;
     let lost = false;
+    let destroyed = false;
+    let raf = null;
+    let last = 0;
     let pointer = 0;
     let pointerTarget = 0;
-    const motion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
-    const compile = (type, source) => {
-      const shader = gl.createShader(type);
+    const stop = () => {
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = null;
+    };
+
+    const releaseResources = () => {
+      const resources = { program, buffer, fragment, vertex };
+      vertex = fragment = program = buffer = null;
+      locations = {};
+      if (lost) return;
+      const release = (label, action) => {
+        try {
+          action();
+        } catch (error) {
+          console.warn(`[${BUNDLE_ID}] could not release ${label}:`, error);
+        }
+      };
+      if (resources.program) release('program binding', () => gl.useProgram(null));
+      if (resources.buffer) release('vertex buffer', () => gl.deleteBuffer(resources.buffer));
+      if (resources.program) release('program', () => gl.deleteProgram(resources.program));
+      if (resources.fragment) release('fragment shader', () => gl.deleteShader(resources.fragment));
+      if (resources.vertex) release('vertex shader', () => gl.deleteShader(resources.vertex));
+    };
+
+    const showPaper = () => {
+      ready = false;
+      stop();
+      canvas.style.visibility = 'hidden';
+      releaseResources();
+    };
+
+    const compile = (shader, source) => {
+      if (!shader) throw new Error('could not allocate shader');
       gl.shaderSource(shader, source);
       gl.compileShader(shader);
       if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.warn(`[${BUNDLE_ID}] theme "${theme.id}" shader compile failed:`, gl.getShaderInfoLog(shader));
-        return null;
+        throw new Error(`shader compile failed: ${gl.getShaderInfoLog(shader)}`);
       }
-      return shader;
     };
 
     const build = () => {
-      const vertex = compile(gl.VERTEX_SHADER, STAGE_VERTEX_SHADER);
-      const fragment = compile(gl.FRAGMENT_SHADER, theme.fragment);
-      if (!vertex || !fragment) {
-        program = null;
-        return;
-      }
-
+      vertex = gl.createShader(gl.VERTEX_SHADER);
+      compile(vertex, STAGE_VERTEX_SHADER);
+      fragment = gl.createShader(gl.FRAGMENT_SHADER);
+      compile(fragment, theme.fragment);
       program = gl.createProgram();
+      if (!program) throw new Error('could not allocate program');
       gl.attachShader(program, vertex);
       gl.attachShader(program, fragment);
       gl.bindAttribLocation(program, 0, 'aPos');
       gl.linkProgram(program);
-
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        console.warn(`[${BUNDLE_ID}] theme "${theme.id}" program link failed:`, gl.getProgramInfoLog(program));
-        program = null;
-        return;
+        throw new Error(`program link failed: ${gl.getProgramInfoLog(program)}`);
       }
 
       gl.useProgram(program);
-      // One triangle that covers the viewport.
-      gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+      buffer = gl.createBuffer();
+      if (!buffer) throw new Error('could not allocate vertex buffer');
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       gl.enableVertexAttribArray(0);
       gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
-
-      locations = {};
       for (const name of ['uRes', 'uTime', 'uPointer', 'uNight', ...colorNames]) {
         locations[name] = gl.getUniformLocation(program, name);
       }
     };
 
+    const canDraw = () => ready && !lost && !destroyed;
+    const render = action => {
+      try {
+        action();
+      } catch (error) {
+        showPaper();
+        console.warn(`[${BUNDLE_ID}] WebGL failed for theme "${theme.id}":`, error);
+      }
+    };
+
     const draw = now => {
-      if (!program || lost) return;
+      if (!canDraw()) return;
+      render(() => {
+        const dark = isDark();
+        const colors = paletteOf(dark);
+        const nextPaper = rgbCss(colors.uPaper);
+        if (nextPaper !== paper) {
+          paper = nextPaper;
+          canvas.style.backgroundColor = paper;
+        }
+        const time = motion.matches ? ENGINE.stillFrame : (now - start) / 1000;
+        pointer += (pointerTarget - pointer) * 0.08;
 
-      const dark = isDark();
-      const colors = paletteOf(dark);
-      const nextPaper = rgbCss(colors.uPaper);
-      if (nextPaper !== paper) {
-        paper = nextPaper;
-        canvas.style.background = paper;
-      }
-
-      // reduced motion holds one still frame, picked so no shooting star is in flight
-      const time = motion.matches ? ENGINE.stillFrame : ((now - start) / 1000);
-      pointer += (pointerTarget - pointer) * 0.08;
-
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      // A theme's shader may ignore some of these (a night-only scene need not
-      // declare `uNight`, a self-paletted one need not declare `uPaper`); an
-      // undeclared uniform yields a null location, which must simply be skipped.
-      if (locations.uRes !== null) gl.uniform2f(locations.uRes, canvas.width, canvas.height);
-      if (locations.uTime !== null) gl.uniform1f(locations.uTime, time);
-      if (locations.uPointer !== null) gl.uniform1f(locations.uPointer, pointer);
-      if (locations.uNight !== null) gl.uniform1f(locations.uNight, dark ? 1 : 0);
-
-      for (const name of colorNames) {
-        if (locations[name] === null) continue;
-        gl.uniform3fv(locations[name], unitRgb(colors[name]));
-      }
-
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.viewport(0, 0, canvas.width, canvas.height);
+        // A fragment shader can omit uniforms it does not use.
+        if (locations.uRes !== null) gl.uniform2f(locations.uRes, canvas.width, canvas.height);
+        if (locations.uTime !== null) gl.uniform1f(locations.uTime, time);
+        if (locations.uPointer !== null) gl.uniform1f(locations.uPointer, pointer);
+        if (locations.uNight !== null) gl.uniform1f(locations.uNight, dark ? 1 : 0);
+        for (const name of colorNames) {
+          if (locations[name] !== null) gl.uniform3fv(locations[name], unitRgb(colors[name]));
+        }
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        if (canvas.style.visibility === 'hidden') canvas.style.visibility = 'visible';
+      });
     };
 
     const resize = () => {
-      if (!canvas.isConnected) mount();
-      // Whole device pixels per cell, so every cell is the same size.
+      if (!canDraw()) return;
+      // Snap the grid to whole device pixels so every cell is the same size.
       const dpr = window.devicePixelRatio || 1;
       const snapped = Math.max(1, Math.round(ENGINE.cell * dpr)) / dpr;
       const columns = Math.max(1, Math.ceil(window.innerWidth / snapped));
@@ -933,22 +955,21 @@ window.__ModuleLoader__.load({
       draw(performance.now());
     };
 
+    const shouldAnimate = () => canDraw() && !motion.matches && !document.hidden;
     const tick = now => {
-      raf = requestAnimationFrame(tick);
+      raf = null;
+      if (!shouldAnimate()) return;
       if (now - last >= 1000 / ENGINE.fps - 2) {
         last = now;
         draw(now);
       }
+      if (shouldAnimate()) raf = requestAnimationFrame(tick);
     };
 
     const play = () => {
-      cancelAnimationFrame(raf);
-      raf = 0;
-      if (!motion.matches && !document.hidden) {
-        raf = requestAnimationFrame(tick);
-      } else {
-        draw(performance.now());
-      }
+      stop();
+      if (shouldAnimate()) raf = requestAnimationFrame(tick);
+      else if (!document.hidden && motion.matches) draw(performance.now());
     };
 
     const onPointer = event => {
@@ -958,42 +979,55 @@ window.__ModuleLoader__.load({
     const onLost = event => {
       event.preventDefault();
       lost = true;
-      cancelAnimationFrame(raf);
+      showPaper();
     };
 
     const onRestored = () => {
+      if (destroyed) return;
       lost = false;
-      build();
-      resize();
-      play();
+      render(() => {
+        build();
+        ready = true;
+        resize();
+        play();
+      });
     };
 
-    canvas.addEventListener('webglcontextlost', onLost);
-    canvas.addEventListener('webglcontextrestored', onRestored);
-    window.addEventListener('resize', resize);
-    window.addEventListener('pointermove', onPointer, { passive: true });
-    document.addEventListener('visibilitychange', play);
-    if (typeof motion.addEventListener === 'function') motion.addEventListener('change', play);
+    const destroy = () => {
+      if (destroyed) return;
+      destroyed = true;
+      backdrop.remove();
+      window.removeEventListener('resize', resize);
+      window.removeEventListener('pointermove', onPointer);
+      document.removeEventListener('visibilitychange', play);
+      motion.removeEventListener?.('change', play);
+      canvas.removeEventListener('webglcontextlost', onLost);
+      canvas.removeEventListener('webglcontextrestored', onRestored);
+      showPaper();
+      if (!lost) gl.getExtension('WEBGL_lose_context')?.loseContext();
+    };
 
-    build();
-    resize();
-    play();
+    try {
+      backdrop.append(canvas);
+      canvas.addEventListener('webglcontextlost', onLost);
+      canvas.addEventListener('webglcontextrestored', onRestored);
+      window.addEventListener('resize', resize);
+      window.addEventListener('pointermove', onPointer, { passive: true });
+      document.addEventListener('visibilitychange', play);
+      motion.addEventListener?.('change', play);
+      document.body.prepend(backdrop);
+      onRestored();
+    } catch (error) {
+      destroy();
+      throw error;
+    }
 
     return {
       refresh() {
+        updatePaper();
         draw(performance.now());
       },
-      destroy() {
-        cancelAnimationFrame(raf);
-        window.removeEventListener('resize', resize);
-        window.removeEventListener('pointermove', onPointer);
-        document.removeEventListener('visibilitychange', play);
-        if (typeof motion.removeEventListener === 'function') motion.removeEventListener('change', play);
-        canvas.removeEventListener('webglcontextlost', onLost);
-        canvas.removeEventListener('webglcontextrestored', onRestored);
-        gl.getExtension('WEBGL_lose_context')?.loseContext();
-        canvas.remove();
-      }
+      destroy
     };
   }
 
@@ -1013,6 +1047,20 @@ window.__ModuleLoader__.load({
   const STATE_COLORS = {
     light: { error: [200, 50, 62], success: [10, 146, 75], warn: [185, 98, 0] },
     dark: { error: [255, 107, 122], success: [79, 213, 127], warn: [254, 162, 71] }
+  };
+
+  const luminance = rgb => {
+    const [r, g, b] = unitRgb(rgb).map(channel => channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+
+  // Use the foreground with the better minimum contrast across normal and hover.
+  const buttonForeground = ({ accent, accentHover }) => {
+    const normal = luminance(accent) + 0.05;
+    const hover = luminance(accentHover) + 0.05;
+    return Math.min(normal, hover) / 0.05 >= 1.05 / Math.max(normal, hover) ? '#000' : '#fff';
   };
 
   /**
@@ -1059,6 +1107,7 @@ window.__ModuleLoader__.load({
       set('--dsw-alias-brand-primary', rgbCss(palette.accent));
       set('--dsw-alias-brand-primary-soft', rgbaCss(palette.accent, 0.15));
       set('--dsw-alias-brand-text', rgbCss(palette.accent));
+      set('--dsw-alias-label-primary-foreground', buttonForeground(palette));
       set('--dsw-alias-button-primary-fill', rgbCss(palette.accent));
       set('--dsw-alias-button-primary-hover', rgbCss(palette.accentHover));
       set('--dsw-alias-button-primary-dimmed', rgbaCss(palette.accent, 0.45));
@@ -1467,13 +1516,13 @@ window.__ModuleLoader__.load({
           'knob.sides.description': 'Paper opacity of the session list and the right-hand panel.',
           'knob.scrim.title': 'Bottom scrim',
           'knob.scrim.description': 'Strength of the fade above the composer, which protects text scrolling over the bright part of the scene.',
-          'footer.note': 'Saved in this browser.',
+          'footer.note': 'Saved for this client.',
           'footer.reset': 'Restore defaults',
           'error.title': 'This page failed to render',
           'error.hint': 'The reason is above; the browser console has the full error.'
         },
         zh: {
-          nav: '像素主题',
+          nav: '动态像素主题',
           'row.theme.title': '主题',
           'knob.scene.title': '风景强度',
           'knob.scene.description': '点阵风景透出窗口的程度。若画面上的文字难以辨认，可往下调。',
@@ -1493,8 +1542,6 @@ window.__ModuleLoader__.load({
       const registerDictionaries = typeof ctx.locale?.register === 'function'
         ? () => ctx.locale.register(LOCALE_NS, dictionaries)
         : () => () => {};
-      ctx.effect(registerDictionaries, 'pixel-themes: settings dictionaries');
-
       const localeT = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(LOCALE_NS) : key => key;
 
       /** Copy that falls back to the key itself, so a missing dictionary never blanks a label. */
@@ -1548,15 +1595,28 @@ window.__ModuleLoader__.load({
       /* ── Page-side state ───────────────────────────────────────────────── */
 
       const root = document.documentElement;
-      root.setAttribute(ROOT_ATTRIBUTE, 'active');
-
       let disposeTokens = null;
       let style = null;
       let stage = null;
-      let observer = null;
       let disposed = false;
-      let detachReady = null;
       let mountedThemeId = null;
+      const cleanups = [];
+
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        root.removeAttribute(ROOT_ATTRIBUTE);
+        root.style.removeProperty(VEIL_VAR);
+        root.style.removeProperty(SCRIM_VAR);
+        style?.remove();
+        for (const cleanup of [disposeTokens, () => stage?.destroy(), ...cleanups.reverse()]) {
+          try {
+            cleanup?.();
+          } catch (error) {
+            console.warn(`[${BUNDLE_ID}] cleanup failed:`, error);
+          }
+        }
+      };
 
       const applySurfaceVariables = values => {
         for (const [name, value] of Object.entries(surfaceVariables(values))) {
@@ -1566,11 +1626,9 @@ window.__ModuleLoader__.load({
 
       const publishTokens = () => {
         const { theme, values } = store.get();
-        let next = null;
-        try {
-          next = ctx.theme.overrideTokens(BUNDLE_ID, buildTokens(theme, values));
-        } catch (error) {
-          console.warn(`[${BUNDLE_ID}] token layer rejected:`, error);
+        const next = ctx.theme.overrideTokens(BUNDLE_ID, buildTokens(theme, values));
+        if (disposed) {
+          next();
           return;
         }
         const previous = disposeTokens;
@@ -1587,16 +1645,25 @@ window.__ModuleLoader__.load({
       };
 
       const sync = () => {
-        if (disposed) return;
         const { values } = store.get();
+        mountStage();
         applySurfaceVariables(values);
         publishTokens();
-        mountStage();
-        stage?.refresh();
+        if (disposed) return;
+        stage.refresh();
+        // The shell goes transparent only once the opaque backdrop is in place.
+        root.setAttribute(ROOT_ATTRIBUTE, 'active');
       };
 
-      const offThemeChange = ctx.on('theme/change', () => stage?.refresh());
-      const offStore = store.subscribe(sync);
+      const guard = action => () => {
+        if (disposed) return;
+        try {
+          action();
+        } catch (error) {
+          dispose();
+          console.warn(`[${BUNDLE_ID}] theme rolled back:`, error);
+        }
+      };
 
       /* ── Mount ─────────────────────────────────────────────────────────── */
 
@@ -1610,63 +1677,40 @@ window.__ModuleLoader__.load({
 
         // The palette attribute lives on <body>, so watch it for scheme flips that
         // arrive outside the theme service (first paint, host boot script).
-        observer = new MutationObserver(() => stage?.refresh());
+        const observer = new MutationObserver(guard(() => stage?.refresh()));
+        cleanups.push(() => observer.disconnect());
         observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] });
-
+        cleanups.push(store.subscribe(guard(sync)));
         sync();
       };
 
-      // `dsh.client.immediately` bundles may evaluate before <body> is parsed, so
-      // the body-bound half waits for it instead of throwing out of apply.
-      if (document.body) {
-        mount();
-      } else {
-        const onReady = () => {
-          detachReady?.();
-          detachReady = null;
+      try {
+        cleanups.push(registerDictionaries());
+        cleanups.push(ctx.on('theme/change', guard(() => stage?.refresh())));
+
+        const Section = createSection({ t: key => text(key, key), store, themeLabel, themeDescription });
+        cleanups.push(ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'pixel-themes',
+          order: 60,
+          label: sectionNavLabel,
+          locale: LOCALE_NS
+        }, Section)));
+
+        // An immediate client bundle may evaluate before <body> is parsed.
+        if (document.body) {
           mount();
-        };
-        document.addEventListener('DOMContentLoaded', onReady, { once: true });
-        detachReady = () => document.removeEventListener('DOMContentLoaded', onReady);
+        } else {
+          const onReady = guard(mount);
+          document.addEventListener('DOMContentLoaded', onReady, { once: true });
+          cleanups.push(() => document.removeEventListener('DOMContentLoaded', onReady));
+        }
+      } catch (error) {
+        dispose();
+        throw error;
       }
 
-      /* ── Settings page ─────────────────────────────────────────────────── */
-
-      const Section = createSection({
-        t: (key, options) => text(key, key),
-        store,
-        themeLabel,
-        themeDescription
-      });
-
-      ctx.slots.inject('settings.section', () => ctx.slots.register({
-        name: 'settings.section',
-        id: 'pixel-themes',
-        order: 60,
-        label: sectionNavLabel,
-        locale: LOCALE_NS
-      }, Section));
-
-      /* ── Teardown ──────────────────────────────────────────────────────── */
-
-      return () => {
-        disposed = true;
-        detachReady?.();
-        detachReady = null;
-        offStore?.();
-        offThemeChange?.();
-        observer?.disconnect();
-        observer = null;
-        stage?.destroy();
-        stage = null;
-        style?.remove();
-        style = null;
-        disposeTokens?.();
-        disposeTokens = null;
-        root.style.removeProperty(VEIL_VAR);
-        root.style.removeProperty(SCRIM_VAR);
-        root.removeAttribute(ROOT_ATTRIBUTE);
-      };
+      return dispose;
     }
   };
   }

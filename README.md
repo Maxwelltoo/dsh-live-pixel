@@ -1,127 +1,67 @@
-# dsh-live-pixel
+# Pixel themes
 
-[简体中文](README.zh.md)
+[简体中文](<README.zh.md>)
 
-A DeepSeek Harness plugin that renders four animated pixel landscapes in real time with WebGL.
+Four animated pixel-art backgrounds for DeepSeek Harness, with a scene picker and readability controls. When WebGL is unavailable, the selected theme keeps its interface colors and uses a solid background.
 
-![WebGL preview of Borealis, The Well, Neon, and The Deep](docs/live-pixel.gif)
+![WebGL preview of Borealis, The Well, Neon, and The Deep](<docs/live-pixel.gif>)
+
+[See all four scenes in the DSH chat UI](<https://github.com/Maxwelltoo/dsh-live-pixel/blob/main/docs/live-pixel-in-dsh.gif>).
 
 ## Install and use
 
-1. Open **Plugins → Add plugin**, enter `dsh-live-pixel@next`, and confirm the installation. Select **Enable now** and follow any restart prompt.
+1. Open **Plugins → Add plugin**, enter `dsh-live-pixel`, and confirm the installation. Select **Enable now** and follow any restart prompt.
 2. Open **Settings → Pixel themes** and choose a scene. If the scene makes text hard to read, lower **Scene strength** or raise **Surface paper**.
 
-To install from a GitHub release tarball, enter its absolute path on the DSH host in **Add plugin**. To uninstall, open the bundle in **Plugins** and select **Uninstall**.
-
-### Migrate from the local build
-
-Remove `@local/dsh-pixel-themes` from the same profile before installing the preview. If you added it through a manual profile patch, delete its entry from that patch. The new package reuses preferences stored in the current client.
+For a downloaded release tarball, enter its absolute path on the DSH host in **Add plugin**. To remove the plugin, open its entry in **Plugins** and select **Uninstall**.
 
 ## Scenes
 
 | Theme | Scene | Light and dark modes |
 | --- | --- | --- |
-| **Borealis** | Aurora, mountains and a lake under passing meteors. In light mode the scene becomes a two-ink risograph dawn. | Separate palettes |
+| **Borealis** | Aurora, mountains and a lake under passing meteors. Light mode shows a two-ink risograph dawn. | Separate palettes |
 | **The Well** | Hanging lamps, vines, a reflecting pool and falling stones at the bottom of a well. | One night palette |
 | **Neon** | A bar window on a rainy night, with neon signs, rain streaks and bottles. | One night palette |
 | **The Deep** | Shafts of light, a passing blue whale, jellyfish and kelp. | One night palette |
+
+Animation pauses while the page is hidden. With reduced motion enabled, the scene holds a still frame.
 
 ## Readability settings
 
 | Control | Default | Effect |
 | --- | --- | --- |
-| Theme | Borealis | Switches the scene and rebuilds the canvas with the new shader |
-| Scene strength | 100% | Lower it to veil more of the scene with the theme's paper colour |
-| Surface paper | 93% | Paper opacity of cards, the composer, message bubbles and code blocks |
-| Side columns | 90% | Paper opacity of the session list and the right panel |
+| Scene strength | 100% | How much of the scene shows through the window |
+| Surface paper | 93% | Opacity of cards, the composer, message bubbles and code blocks |
+| Side columns | 90% | Opacity of the session list and the right panel |
 | Bottom scrim | 60% | Strength of the fade above the composer |
 
-Each theme keeps its own slider values. **Restore defaults** resets the current theme. Preferences are stored locally in the current Desktop installation or Web browser profile.
-
-## How it works
-
-- **Shared WebGL engine.** A single fixed canvas (`z-index: -1`) draws one dither cell per 3 CSS pixels and targets 24 FPS. The engine manages sizing, frame scheduling, pointer easing and context loss recovery. It pauses animation while the tab is hidden and holds a still frame when reduced motion is enabled. The animated scenes require WebGL.
-- **Theme data.** Each theme supplies a GLSL fragment shader, light and dark shader palettes, semantic UI colours, localized labels and control defaults. The shaders choose their Bayer matrix. Neon uses 4×4 and the other scenes use 8×8.
-- **UI tokens.** The semantic palette and paper opacity values feed 40+ `--dsw-alias-*` and `--dsw-specific-*` tokens for the app, including dialogs, menus and code blocks.
-- **Readable layers.** The stylesheet clears the main containers, including `body`, `#root` and the conversation column, so the canvas shows through. Keeping `--dsw-alias-bg-base` opaque preserves neutral card fills, and the side columns keep their own paper fills. The paper veil (`--dsh-pixel-veil`) and bottom scrim (`--dsh-pixel-scrim`) sit above the canvas.
+Settings are saved locally for each theme. **Restore defaults** resets the current theme.
 
 ## Compatibility
 
-Desktop and Web use the same client plugin. Installing and removing `dsh-live-pixel@next` was verified with an isolated DSH `0.2.2-rc.1` Web profile. Desktop installation and rendering on physical hardware are pending verification.
+- **DSH Desktop 0.2.2-rc.3** was tested for switching themes, changing settings, and restoring the window after minimizing it.
+- **DSH Web 0.2.2-rc.1** was tested for installation, theme and appearance changes, preference persistence, disabling, and uninstalling Live Pixel 2.1.0 in an isolated profile.
 
-The graphical installation steps above apply to both. To install from a terminal, use the command for your profile.
+## Development
 
-```sh
-# Web profile
-dsh plugin --profile web add dsh-live-pixel@next
-# Desktop profile, using the dsh command bundled with Desktop
-dsh plugin --profile desktop add dsh-live-pixel@next
-```
+Copy the [Borealis theme module](<themes/borealis.js>) to `themes/<id>.js` and give it a unique kebab-case ID starting with a letter. Supply Chinese and English labels, light and dark shader colors (`colors`, both with `uPaper`), the interface colors (`palette`), and a fragment shader (`fragment`). The description and slider defaults are optional. The engine provides `uRes`, `uTime`, `uPointer`, and `uNight`.
 
-Replace `web` if your Web server uses a different profile, then restart the server and refresh the browser. For Desktop, launch the app once to initialize its profile, fully quit before running the bundled command, and reopen it afterward. [Desktop command runtime](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.2-rc.1/apps/desktop/README.md#bundled-command-runtime)
-
-## Contributing and development
-
-### Add a theme
-
-1. Copy the Borealis module to `themes/<id>.js`. Update `id`, `label`, `description` and `defaults`, then replace `fragment`, `colors` and `palette`. [Borealis source](themes/borealis.js)
-2. Run `node scripts/build.mjs` from the repository root. The build discovers and validates the new theme automatically.
-3. Reload the page and choose the new theme under **Settings → Pixel themes**. It keeps its own readability settings.
-
-Each theme module exports an object as its default export.
-
-| Field | Meaning |
-| --- | --- |
-| `id` | Unique kebab-case ID starting with a letter. It is also the key for the theme's saved values |
-| `label` | Non-empty `zh` and `en` strings |
-| `description` | Optional localized text shown below the picker |
-| `defaults` | Optional overrides for `scene`, `surface`, `sides` and `scrim` |
-| `colors` | `light` and `dark` maps with the same shader uniform names and RGB byte triplets. Both require `uPaper` for the canvas ground and the tint of the veil and scrim |
-| `palette` | `light` and `dark` maps with RGB byte triplets for `paper`, `surface`, `surfaceDeep`, `ink`, `inkSoft`, `inkFaint`, `accent` and `accentHover` |
-| `fragment` | GLSL fragment shader string defining `void main()` |
-
-The engine supplies `uRes`, `uTime`, `uPointer` and `uNight`. `uNight` is `1` in dark mode. Build errors identify the failing theme file and field. Run the build to regenerate the client bundle. [Generated client.js](client.js)
-
-### Build and test
+Run these commands from the project root. The build discovers and validates theme modules automatically.
 
 ```sh
 node scripts/build.mjs           # regenerate client.js
 node scripts/build.mjs --check   # check that the bundle is up to date
-node tests/smoke.mjs             # smoke-test with stub DOM, React and WebGL
-node tests/render.real.mjs       # mount the settings page with React 18 and jsdom
+node tests/smoke.mjs             # test with stub DOM, React and WebGL
+node tests/render.real.mjs       # mount settings with React 18 and jsdom
 ```
 
-- The smoke test runs the bundled plugin, tests startup before `<body>` exists, injects an extra theme to exercise canvas recreation, and verifies teardown. Its React stub enforces stable `getSnapshot` references so the settings page does not enter a render loop. [Smoke test](tests/smoke.mjs)
-- The settings test mounts the component through `react-dom/client`. It looks for React 18, `react-dom` and jsdom in `PIXEL_THEMES_REACT_DIR`, local `node_modules` or a sibling workspace package. The test skips if those dependencies are unavailable. An error boundary surfaces render failures in the settings page. [React settings test](tests/render.real.mjs)
-
-To check the shaders and engine in a browser, run the following from the repository root. [Shader check script](scripts/shader-check.mjs)
+The settings test skips if React 18, react-dom, or jsdom is unavailable. To check real WebGL rendering, generate the diagnostic pages and serve the project root. Open the [shader check](<http://127.0.0.1:8400/tests/shader-check/>), [engine check](<http://127.0.0.1:8400/tests/shader-check/boot.html?theme=well>), or [scene gallery](<http://127.0.0.1:8400/tests/shader-check/gallery.html>).
 
 ```sh
 node scripts/shader-check.mjs
 python3 -m http.server 8400
 ```
 
-- [Shader check](http://127.0.0.1:8400/tests/shader-check/) compiles each shader on the GPU and draws one frame. It reports `ok / mean / lit% / tones`. A single tone means the entire frame landed on one palette step, often because of a missing uniform or an incorrect palette.
-- [Engine check](http://127.0.0.1:8400/tests/shader-check/boot.html?theme=well) loads the client bundle and reports canvas size, draw calls, GL errors and warnings. Append `&scheme=light` to check light mode.
-- [Gallery](http://127.0.0.1:8400/tests/shader-check/gallery.html) shows all four rendered scenes together.
-
-### Source layout
-
-```text
-src/                 runtime fragments in build order
-  00-runtime.js        platform imports, IDs and colour helpers
-  10-settings.js       controls, per-theme preferences and storage
-  20-stage.js          WebGL renderer and frame scheduling
-  30-tokens.js         UI tokens derived from the theme palette
-  40-styles.js         background transparency and readability layers
-  50-section.js        settings page
-  60-plugin.js         registration and lifecycle
-themes/              one module per theme
-scripts/             bundler and browser diagnostics
-tests/               smoke and settings render tests
-client.js            generated client bundle
-```
-
 ## License and credits
 
-The project is MIT-licensed. The Borealis shader adapts the scene structure and palettes from Adolanium's hermes-borealis. [MIT license](LICENSE) · [Third-party notices](THIRD_PARTY_NOTICES.md) · [hermes-borealis](https://github.com/Adolanium/hermes-borealis)
+The project is MIT-licensed. The Borealis shader adapts the scene structure and palettes from Adolanium's hermes-borealis. [MIT license](<LICENSE>) · [Third-party notices](<THIRD_PARTY_NOTICES.md>) · [hermes-borealis](<https://github.com/Adolanium/hermes-borealis>)

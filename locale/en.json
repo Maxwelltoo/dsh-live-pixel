@@ -1,6 +1,7 @@
 {
   "meta": {
     "title": "Pixel themes",
-    "description": "Live dithered scenes behind the window, with a theme picker and readability settings."
+    "description": "Four animated pixel-art backgrounds with a scene picker and readability controls.",
+    "detail": "README.md"
   }
 }

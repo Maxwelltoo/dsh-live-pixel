@@ -1,6 +1,7 @@
 {
   "meta": {
-    "title": "像素主题 (Pixel themes)",
-    "description": "窗口背后的实时点阵风景，带主题切换与可读性调节。"
+    "title": "动态像素主题",
+    "description": "四种动态像素风景，可切换场景并调节可读性。",
+    "detail": "README.zh.md"
   }
 }

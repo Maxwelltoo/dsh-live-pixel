@@ -1,6 +1,6 @@
 {
   "name": "dsh-live-pixel",
-  "version": "2.1.0-rc.1",
+  "version": "2.1.0",
   "description": "Live dithered pixel themes for DSH: a shared WebGL scene engine, a theme picker and readability settings. Ships Borealis, The Well, Neon and The Deep.",
   "license": "MIT",
   "repository": {
@@ -29,6 +29,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
+    "docs/live-pixel.gif",
     "src/*.js",
     "themes/*.js",
     "scripts/*.mjs",

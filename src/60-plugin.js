@@ -22,13 +22,13 @@ return {
         'knob.sides.description': 'Paper opacity of the session list and the right-hand panel.',
         'knob.scrim.title': 'Bottom scrim',
         'knob.scrim.description': 'Strength of the fade above the composer, which protects text scrolling over the bright part of the scene.',
-        'footer.note': 'Saved in this browser.',
+        'footer.note': 'Saved for this client.',
         'footer.reset': 'Restore defaults',
         'error.title': 'This page failed to render',
         'error.hint': 'The reason is above; the browser console has the full error.'
       },
       zh: {
-        nav: '像素主题',
+        nav: '动态像素主题',
         'row.theme.title': '主题',
         'knob.scene.title': '风景强度',
         'knob.scene.description': '点阵风景透出窗口的程度。若画面上的文字难以辨认，可往下调。',
@@ -48,8 +48,6 @@ return {
     const registerDictionaries = typeof ctx.locale?.register === 'function'
       ? () => ctx.locale.register(LOCALE_NS, dictionaries)
       : () => () => {};
-    ctx.effect(registerDictionaries, 'pixel-themes: settings dictionaries');
-
     const localeT = typeof ctx.locale?.bind === 'function' ? ctx.locale.bind(LOCALE_NS) : key => key;
 
     /** Copy that falls back to the key itself, so a missing dictionary never blanks a label. */
@@ -103,15 +101,28 @@ return {
     /* ── Page-side state ───────────────────────────────────────────────── */
 
     const root = document.documentElement;
-    root.setAttribute(ROOT_ATTRIBUTE, 'active');
-
     let disposeTokens = null;
     let style = null;
     let stage = null;
-    let observer = null;
     let disposed = false;
-    let detachReady = null;
     let mountedThemeId = null;
+    const cleanups = [];
+
+    const dispose = () => {
+      if (disposed) return;
+      disposed = true;
+      root.removeAttribute(ROOT_ATTRIBUTE);
+      root.style.removeProperty(VEIL_VAR);
+      root.style.removeProperty(SCRIM_VAR);
+      style?.remove();
+      for (const cleanup of [disposeTokens, () => stage?.destroy(), ...cleanups.reverse()]) {
+        try {
+          cleanup?.();
+        } catch (error) {
+          console.warn(`[${BUNDLE_ID}] cleanup failed:`, error);
+        }
+      }
+    };
 
     const applySurfaceVariables = values => {
       for (const [name, value] of Object.entries(surfaceVariables(values))) {
@@ -121,11 +132,9 @@ return {
 
     const publishTokens = () => {
       const { theme, values } = store.get();
-      let next = null;
-      try {
-        next = ctx.theme.overrideTokens(BUNDLE_ID, buildTokens(theme, values));
-      } catch (error) {
-        console.warn(`[${BUNDLE_ID}] token layer rejected:`, error);
+      const next = ctx.theme.overrideTokens(BUNDLE_ID, buildTokens(theme, values));
+      if (disposed) {
+        next();
         return;
       }
       const previous = disposeTokens;
@@ -142,16 +151,25 @@ return {
     };
 
     const sync = () => {
-      if (disposed) return;
       const { values } = store.get();
+      mountStage();
       applySurfaceVariables(values);
       publishTokens();
-      mountStage();
-      stage?.refresh();
+      if (disposed) return;
+      stage.refresh();
+      // The shell goes transparent only once the opaque backdrop is in place.
+      root.setAttribute(ROOT_ATTRIBUTE, 'active');
     };
 
-    const offThemeChange = ctx.on('theme/change', () => stage?.refresh());
-    const offStore = store.subscribe(sync);
+    const guard = action => () => {
+      if (disposed) return;
+      try {
+        action();
+      } catch (error) {
+        dispose();
+        console.warn(`[${BUNDLE_ID}] theme rolled back:`, error);
+      }
+    };
 
     /* ── Mount ─────────────────────────────────────────────────────────── */
 
@@ -165,62 +183,39 @@ return {
 
       // The palette attribute lives on <body>, so watch it for scheme flips that
       // arrive outside the theme service (first paint, host boot script).
-      observer = new MutationObserver(() => stage?.refresh());
+      const observer = new MutationObserver(guard(() => stage?.refresh()));
+      cleanups.push(() => observer.disconnect());
       observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme'] });
-
+      cleanups.push(store.subscribe(guard(sync)));
       sync();
     };
 
-    // `dsh.client.immediately` bundles may evaluate before <body> is parsed, so
-    // the body-bound half waits for it instead of throwing out of apply.
-    if (document.body) {
-      mount();
-    } else {
-      const onReady = () => {
-        detachReady?.();
-        detachReady = null;
+    try {
+      cleanups.push(registerDictionaries());
+      cleanups.push(ctx.on('theme/change', guard(() => stage?.refresh())));
+
+      const Section = createSection({ t: key => text(key, key), store, themeLabel, themeDescription });
+      cleanups.push(ctx.slots.inject('settings.section', () => ctx.slots.register({
+        name: 'settings.section',
+        id: 'pixel-themes',
+        order: 60,
+        label: sectionNavLabel,
+        locale: LOCALE_NS
+      }, Section)));
+
+      // An immediate client bundle may evaluate before <body> is parsed.
+      if (document.body) {
         mount();
-      };
-      document.addEventListener('DOMContentLoaded', onReady, { once: true });
-      detachReady = () => document.removeEventListener('DOMContentLoaded', onReady);
+      } else {
+        const onReady = guard(mount);
+        document.addEventListener('DOMContentLoaded', onReady, { once: true });
+        cleanups.push(() => document.removeEventListener('DOMContentLoaded', onReady));
+      }
+    } catch (error) {
+      dispose();
+      throw error;
     }
 
-    /* ── Settings page ─────────────────────────────────────────────────── */
-
-    const Section = createSection({
-      t: (key, options) => text(key, key),
-      store,
-      themeLabel,
-      themeDescription
-    });
-
-    ctx.slots.inject('settings.section', () => ctx.slots.register({
-      name: 'settings.section',
-      id: 'pixel-themes',
-      order: 60,
-      label: sectionNavLabel,
-      locale: LOCALE_NS
-    }, Section));
-
-    /* ── Teardown ──────────────────────────────────────────────────────── */
-
-    return () => {
-      disposed = true;
-      detachReady?.();
-      detachReady = null;
-      offStore?.();
-      offThemeChange?.();
-      observer?.disconnect();
-      observer = null;
-      stage?.destroy();
-      stage = null;
-      style?.remove();
-      style = null;
-      disposeTokens?.();
-      disposeTokens = null;
-      root.style.removeProperty(VEIL_VAR);
-      root.style.removeProperty(SCRIM_VAR);
-      root.removeAttribute(ROOT_ATTRIBUTE);
-    };
+    return dispose;
   }
 };
